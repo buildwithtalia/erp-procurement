@@ -146,17 +146,6 @@ def create_app() -> Flask:
             "message": "Purchase order placed with vendor",
         })
 
-    @app.post("/api/procurement/purchase-orders/<po_id>/receive")
-    def receive_purchase_order(po_id):
-        po = next((p for p in _purchase_orders if p["id"] == po_id), None)
-        if po:
-            po["status"] = "received"
-        return success({
-            "id": po_id, "status": "received",
-            "receivedAt": datetime.utcnow().isoformat() + "Z",
-            "message": "Purchase order received",
-        })
-
     @app.post("/api/procurement/purchase-orders/<po_id>/cancel")
     def cancel_purchase_order(po_id):
         po = next((p for p in _purchase_orders if p["id"] == po_id), None)
