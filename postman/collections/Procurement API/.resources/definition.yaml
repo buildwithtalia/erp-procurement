@@ -1,0 +1,18 @@
+$kind: collection
+name: Procurement API
+description: |-
+  Vendors and purchase-order management for the erp-procurement microservice.
+
+  Base URL is configured via the `baseUrl` collection variable
+  (default: http://localhost:3016).
+
+  ## Purchase order workflow
+
+  ```
+  draft → approved → placed → received
+                           ↘ partial → received
+  (any non-terminal status) → cancelled
+  ```
+variables:
+  - key: baseUrl
+    value: 'http://localhost:3016'

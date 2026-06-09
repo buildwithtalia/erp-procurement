@@ -1,0 +1,12 @@
+$kind: http-request
+description: |-
+  Advance a purchase order from `approved` to `placed`, transmitting it to the
+  vendor. Also posts a purchase-commitment journal entry to the Accounting service
+  (Purchases Expense debit / Accounts Payable credit).
+  Returns 409 if the order is not in `approved` status.
+method: POST
+url: '{{baseUrl}}/api/procurement/purchase-orders/:id/place'
+order: 5000
+pathVariables:
+  - key: id
+    value: po-001

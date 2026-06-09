@@ -1,0 +1,82 @@
+$kind: http-request
+description: |-
+  ## Purpose
+
+  Mark a purchase order as received after the physical goods have been
+  delivered and accepted. This is the endpoint called by the Inventory
+  service (`POST /api/inventory/stock/receive`) to close the procurement
+  side of a stock receipt.
+
+  ### Status transitions
+
+  | From | To |
+  |------|----|
+  | `placed` | `received` (all items match) or `partial` (under-delivered) |
+  | `partial` | `received` (remaining items delivered) or `partial` again |
+
+  Returns **409 Conflict** for any other current status.
+
+  ### Side effects
+
+  * Sets `status` to `received` (or `partial` when total received < total ordered).
+  * Posts a goods-receipt journal entry to the Accounting service:
+    * Debit **Inventory Asset (1300)**
+    * Credit **Accounts Payable (2000)**
+
+  ### Validation
+
+  * `receivedQuantity` for any item must not exceed its `quantity` on the original order.
+    Returns **400 Bad Request** with code `QUANTITY_EXCEEDED` if violated.
+
+  ## Request body
+
+  | Field | Type | Required | Description |
+  |-------|------|----------|-------------|
+  | receivedDate | string | Yes | Date items were received (YYYY-MM-DD) |
+  | receivedBy | string | No | Name of the person who received the goods |
+  | items | array | Yes | Per-item receipt details |
+  | items[].itemId | string | Yes | Item identifier |
+  | items[].receivedQuantity | number | Yes | Quantity actually received |
+  | items[].condition | string | No | `good` \| `damaged` \| `defective` |
+  | items[].notes | string | No | Per-item notes |
+  | notes | string | No | General notes about the receipt |
+  | discrepancies | array | No | Discrepancy records |
+method: POST
+url: '{{baseUrl}}/api/procurement/purchase-orders/:id/receive'
+order: 6000
+headers:
+  - key: Content-Type
+    value: application/json
+pathVariables:
+  - key: id
+    value: po-001
+body:
+  type: json
+  content: |-
+    {
+      "receivedDate": "2024-01-25",
+      "receivedBy": "Mike Johnson",
+      "items": [
+        {
+          "itemId": "item-456",
+          "receivedQuantity": 20,
+          "condition": "good",
+          "notes": "All items in excellent condition"
+        },
+        {
+          "itemId": "item-789",
+          "receivedQuantity": 9,
+          "condition": "good",
+          "notes": "One item damaged during shipping"
+        }
+      ],
+      "notes": "Delivery arrived on time. One desk had minor damage.",
+      "discrepancies": [
+        {
+          "itemId": "item-789",
+          "ordered": 10,
+          "received": 9,
+          "reason": "One item damaged"
+        }
+      ]
+    }

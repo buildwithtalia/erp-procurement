@@ -1,0 +1,7 @@
+$kind: http-request
+method: GET
+url: '{{baseUrl}}/api/procurement/vendors/:vendor_id/performance'
+order: 4000
+pathVariables:
+  - key: vendor_id
+    value: vendor-001

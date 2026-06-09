@@ -1,0 +1,10 @@
+$kind: http-request
+description: |-
+  Advance a purchase order from `draft` status to `approved`.
+  Returns 409 if the order is not in `draft` status.
+method: POST
+url: '{{baseUrl}}/api/procurement/purchase-orders/:id/approve'
+order: 4000
+pathVariables:
+  - key: id
+    value: po-001

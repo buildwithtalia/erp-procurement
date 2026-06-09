@@ -1,0 +1,10 @@
+$kind: http-request
+description: |-
+  Cancel a purchase order. Valid from `draft`, `approved`, or `placed` status.
+  Returns 409 if the order is already `received` or `cancelled`.
+method: POST
+url: '{{baseUrl}}/api/procurement/purchase-orders/:id/cancel'
+order: 7000
+pathVariables:
+  - key: id
+    value: po-001

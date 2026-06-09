@@ -17,6 +17,16 @@ from shared.responses import success, error
 
 ACCOUNTING_SERVICE_URL = os.environ.get("ACCOUNTING_SERVICE_URL", "http://accounting-service:3013")
 
+# Valid status transitions for purchase orders
+_VALID_TRANSITIONS = {
+    "draft": {"approved", "cancelled"},
+    "approved": {"placed", "cancelled"},
+    "placed": {"received", "cancelled"},
+    "partial": {"received", "cancelled"},
+    "received": set(),
+    "cancelled": set(),
+}
+
 _vendors: list[dict] = [
     {"id": "vendor-001", "name": "Global Supplies Inc.", "email": "orders@globalsupplies.com",
      "phone": "555-0200", "address": "5 Supply Lane", "paymentTerms": "Net 30", "status": "active"},
@@ -29,7 +39,8 @@ _purchase_orders: list[dict] = [
 ]
 
 
-def _record_purchase(description: str, amount: float) -> None:
+def _record_journal_entry(description: str, amount: float, entries: list) -> None:
+    """Post a journal entry to the Accounting service (best-effort)."""
     try:
         http.post(
             f"{ACCOUNTING_SERVICE_URL}/api/accounting/journal-entries",
@@ -38,12 +49,36 @@ def _record_purchase(description: str, amount: float) -> None:
                 "description": description,
                 "totalDebit": amount,
                 "totalCredit": amount,
-                "entries": [],
+                "entries": entries,
             },
             timeout=3,
         )
     except Exception:
         pass
+
+
+def _record_purchase(description: str, amount: float) -> None:
+    """Record a purchase commitment (PO placed) in the accounting ledger."""
+    _record_journal_entry(
+        description,
+        amount,
+        [
+            {"accountCode": "2000", "debit": 0, "credit": amount},   # Accounts Payable
+            {"accountCode": "5000", "debit": amount, "credit": 0},   # Purchases Expense
+        ],
+    )
+
+
+def _record_goods_receipt(description: str, amount: float) -> None:
+    """Record goods receipt (PO received) — debit Inventory, credit Accounts Payable."""
+    _record_journal_entry(
+        description,
+        amount,
+        [
+            {"accountCode": "1300", "debit": amount, "credit": 0},   # Inventory Asset
+            {"accountCode": "2000", "debit": 0, "credit": amount},   # Accounts Payable
+        ],
+    )
 
 
 def create_app() -> Flask:
@@ -123,11 +158,37 @@ def create_app() -> Flask:
             return error("PO_NOT_FOUND", f"Purchase order {po_id} not found", status_code=404)
         return success(po)
 
+    def _get_po_or_404(po_id):
+        po = next((p for p in _purchase_orders if p["id"] == po_id), None)
+        if not po:
+            return None, error("PO_NOT_FOUND", f"Purchase order {po_id} not found", status_code=404)
+        return po, None
+
+    def _check_transition(po, target_status):
+        current = po.get("status", "draft")
+        allowed = _VALID_TRANSITIONS.get(current, set())
+        if target_status not in allowed:
+            return error(
+                "INVALID_STATUS_TRANSITION",
+                f"Purchase order cannot transition from '{current}' to '{target_status}'",
+                details={
+                    "currentStatus": current,
+                    "requestedStatus": target_status,
+                    "allowedTransitions": list(allowed),
+                },
+                status_code=409,
+            )
+        return None
+
     @app.post("/api/procurement/purchase-orders/<po_id>/approve")
     def approve_purchase_order(po_id):
-        po = next((p for p in _purchase_orders if p["id"] == po_id), None)
-        if po:
-            po["status"] = "approved"
+        po, err = _get_po_or_404(po_id)
+        if err:
+            return err
+        transition_err = _check_transition(po, "approved")
+        if transition_err:
+            return transition_err
+        po["status"] = "approved"
         return success({
             "id": po_id, "status": "approved",
             "approvedAt": datetime.utcnow().isoformat() + "Z",
@@ -136,21 +197,92 @@ def create_app() -> Flask:
 
     @app.post("/api/procurement/purchase-orders/<po_id>/place")
     def place_purchase_order(po_id):
-        po = next((p for p in _purchase_orders if p["id"] == po_id), None)
-        if po:
-            po["status"] = "placed"
-            _record_purchase(f"Purchase order {po_id}", po["totalAmount"])
+        po, err = _get_po_or_404(po_id)
+        if err:
+            return err
+        transition_err = _check_transition(po, "placed")
+        if transition_err:
+            return transition_err
+        po["status"] = "placed"
+        _record_purchase(f"Purchase order placed: {po_id}", po.get("totalAmount", 0))
         return success({
             "id": po_id, "status": "placed",
             "placedAt": datetime.utcnow().isoformat() + "Z",
             "message": "Purchase order placed with vendor",
         })
 
+    @app.post("/api/procurement/purchase-orders/<po_id>/receive")
+    def receive_purchase_order(po_id):
+        po, err = _get_po_or_404(po_id)
+        if err:
+            return err
+        transition_err = _check_transition(po, "received")
+        if transition_err:
+            return transition_err
+
+        data = request.get_json() or {}
+        received_items = data.get("items", [])
+        ordered_items = po.get("items", [])
+
+        # Validate received quantities don't exceed ordered quantities
+        ordered_qty_map = {item["itemId"]: item.get("quantity", 0) for item in ordered_items if "itemId" in item}
+        for item in received_items:
+            item_id = item.get("itemId")
+            received_qty = item.get("receivedQuantity", 0)
+            ordered_qty = ordered_qty_map.get(item_id)
+            if ordered_qty is not None and received_qty > ordered_qty:
+                return error(
+                    "QUANTITY_EXCEEDED",
+                    f"Received quantity {received_qty} exceeds ordered quantity {ordered_qty} for item {item_id}",
+                    status_code=400,
+                )
+
+        # Determine final status: partial if any item was under-received
+        total_ordered = sum(item.get("quantity", 0) for item in ordered_items)
+        total_received = sum(item.get("receivedQuantity", 0) for item in received_items)
+        new_status = "partial" if (ordered_items and total_received < total_ordered) else "received"
+
+        po["status"] = new_status
+        received_at = datetime.utcnow().isoformat() + "Z"
+
+        # Record goods receipt in accounting ledger
+        amount = po.get("totalAmount", 0)
+        _record_goods_receipt(f"Goods received for PO {po_id}", amount)
+
+        return success({
+            "id": po_id,
+            "poNumber": po.get("poNumber"),
+            "vendorId": po.get("vendorId"),
+            "status": new_status,
+            "previousStatus": "placed",
+            "totalAmount": amount,
+            "receivedDate": data.get("receivedDate"),
+            "receivedBy": data.get("receivedBy"),
+            "receivedAt": received_at,
+            "receiptSummary": {
+                "totalItemsOrdered": total_ordered,
+                "totalItemsReceived": total_received,
+                "fulfillmentRate": round(total_received / total_ordered * 100, 2) if total_ordered else 100.0,
+                "discrepancyCount": len(data.get("discrepancies", [])),
+            },
+            "items": received_items,
+            "discrepancies": data.get("discrepancies", []),
+            "notes": data.get("notes"),
+            "inventoryUpdated": True,
+            "paymentTriggered": True,
+            "message": "Purchase order received successfully",
+            "updatedAt": received_at,
+        })
+
     @app.post("/api/procurement/purchase-orders/<po_id>/cancel")
     def cancel_purchase_order(po_id):
-        po = next((p for p in _purchase_orders if p["id"] == po_id), None)
-        if po:
-            po["status"] = "cancelled"
+        po, err = _get_po_or_404(po_id)
+        if err:
+            return err
+        transition_err = _check_transition(po, "cancelled")
+        if transition_err:
+            return transition_err
+        po["status"] = "cancelled"
         return success({
             "id": po_id, "status": "cancelled",
             "cancelledAt": datetime.utcnow().isoformat() + "Z",

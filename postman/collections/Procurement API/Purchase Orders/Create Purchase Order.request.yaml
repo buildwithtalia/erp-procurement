@@ -1,0 +1,20 @@
+$kind: http-request
+method: POST
+url: '{{baseUrl}}/api/procurement/purchase-orders'
+order: 1000
+headers:
+  - key: Content-Type
+    value: application/json
+body:
+  type: json
+  content: |-
+    {
+      "vendorId": "vendor-001",
+      "orderDate": "2024-01-10",
+      "expectedDeliveryDate": "2024-01-20",
+      "items": [
+        { "itemId": "item-456", "quantity": 20 },
+        { "itemId": "item-789", "quantity": 10 }
+      ],
+      "totalAmount": 5000
+    }
