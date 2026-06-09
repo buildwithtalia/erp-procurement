@@ -1,0 +1,7 @@
+$kind: http-request
+method: GET
+url: '{{baseUrl}}/api/procurement/purchase-orders/:id'
+order: 3000
+pathVariables:
+  - key: id
+    value: po-001
