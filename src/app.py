@@ -14,8 +14,18 @@ import requests as http
 
 from shared.health import make_health_blueprint
 from shared.responses import success, error
+from shared import localization as l10n
 
 ACCOUNTING_SERVICE_URL = os.environ.get("ACCOUNTING_SERVICE_URL", "http://accounting-service:3013")
+
+# Money-bearing fields on a purchase order, used to attach localized currency data.
+_PO_MONEY_FIELDS = ["totalAmount"]
+
+
+def _localize(record, money_fields):
+    """Attach a localization block resolved from the current request."""
+    locale = l10n.resolve_locale_from_request(request)
+    return l10n.localize_record(record, money_fields, locale)
 
 # Valid status transitions for purchase orders
 _VALID_TRANSITIONS = {
@@ -143,7 +153,7 @@ def create_app() -> Flask:
             "status": "draft",
         }
         _purchase_orders.append(po)
-        return success(po, 201)
+        return success(_localize(po, _PO_MONEY_FIELDS), 201)
 
     @app.get("/api/procurement/purchase-orders")
     def get_all_purchase_orders():
@@ -156,7 +166,7 @@ def create_app() -> Flask:
         po = next((p for p in _purchase_orders if p["id"] == po_id), None)
         if not po:
             return error("PO_NOT_FOUND", f"Purchase order {po_id} not found", status_code=404)
-        return success(po)
+        return success(_localize(po, _PO_MONEY_FIELDS))
 
     def _get_po_or_404(po_id):
         po = next((p for p in _purchase_orders if p["id"] == po_id), None)
@@ -288,6 +298,26 @@ def create_app() -> Flask:
             "cancelledAt": datetime.utcnow().isoformat() + "Z",
             "message": "Purchase order cancelled",
         })
+
+    # ------------------------------------------------------------------ #
+    # Localization
+    # ------------------------------------------------------------------ #
+    @app.get("/api/localization/locales")
+    def list_locales():
+        return success({"locales": l10n.supported_locales(), "default": l10n.DEFAULT_LOCALE})
+
+    @app.get("/api/localization/currencies")
+    def list_currencies():
+        return success({"currencies": l10n.supported_currencies()})
+
+    @app.get("/api/localization/languages")
+    def list_languages():
+        return success({"languages": l10n.supported_languages()})
+
+    @app.get("/api/localization/resolve")
+    def resolve_locale_endpoint():
+        resolved = l10n.resolve_locale_from_request(request)
+        return success(l10n.locale_info(resolved))
 
     @app.errorhandler(404)
     def not_found(_):
